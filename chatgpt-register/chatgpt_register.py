@@ -32,6 +32,7 @@ def _load_config():
         "total_accounts": 3,
         "tempmail_api_base": "",
         "tempmail_api_token": "",
+        "tempmail_admin_token": "",
         "tempmail_domain": "",
         "proxy": "",
         "output_file": "registered_accounts.txt",
@@ -60,6 +61,7 @@ def _load_config():
     # 环境变量优先级更高
     config["tempmail_api_base"] = os.environ.get("TEMPMAIL_API_BASE", config["tempmail_api_base"])
     config["tempmail_api_token"] = os.environ.get("TEMPMAIL_API_TOKEN", config["tempmail_api_token"])
+    config["tempmail_admin_token"] = os.environ.get("TEMPMAIL_ADMIN_TOKEN", config.get("tempmail_admin_token", ""))
     config["tempmail_domain"] = os.environ.get("TEMPMAIL_DOMAIN", config["tempmail_domain"])
     config["proxy"] = os.environ.get("PROXY", config["proxy"])
     config["total_accounts"] = int(os.environ.get("TOTAL_ACCOUNTS", config["total_accounts"]))
@@ -88,6 +90,7 @@ def _as_bool(value):
 _CONFIG = _load_config()
 TEMPMAIL_API_BASE = _CONFIG["tempmail_api_base"].rstrip("/")
 TEMPMAIL_API_TOKEN = _CONFIG["tempmail_api_token"]
+TEMPMAIL_ADMIN_TOKEN = _CONFIG.get("tempmail_admin_token", "")
 TEMPMAIL_DOMAIN = _CONFIG["tempmail_domain"]
 DEFAULT_TOTAL_ACCOUNTS = _CONFIG["total_accounts"]
 DEFAULT_PROXY = _CONFIG["proxy"]
@@ -913,6 +916,24 @@ def _generate_password(length=14):
 
 # ================= temp-mail-console 邮箱函数 =================
 
+def _extract_six_digit_code(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            try:
+                value = json.dumps(value, ensure_ascii=False)
+            except Exception:
+                value = str(value)
+        text_value = str(value).strip()
+        if not text_value:
+            continue
+        match = re.search(r"(?<!\d)(\d{6})(?!\d)", text_value)
+        if match:
+            return match.group(1)
+    return None
+
+
 def create_temp_email():
     """生成临时邮箱地址"""
     if not TEMPMAIL_DOMAIN:
@@ -928,22 +949,61 @@ def _query_tempmail_latest(email: str):
     """查询 temp-mail-console 最新命中结果，返回验证码或 None"""
     try:
         session = curl_requests.Session()
-        res = session.get(
-            f"{TEMPMAIL_API_BASE}/api/emails/latest",
-            params={"address": email},
-            headers={"Authorization": f"Bearer {TEMPMAIL_API_TOKEN}"},
-            timeout=15,
-        )
-        if res.status_code != 200:
-            return None
-        data = res.json()
-        if data.get("code") != 200:
-            return None
-        results = (data.get("data") or {}).get("results") or []
-        for r in results:
-            value = str(r.get("value", "")).strip()
-            if re.fullmatch(r"\d{6}", value):
-                return value
+
+        if TEMPMAIL_API_TOKEN:
+            res = session.get(
+                f"{TEMPMAIL_API_BASE}/api/emails/latest",
+                params={"address": email},
+                headers={"Authorization": f"Bearer {TEMPMAIL_API_TOKEN}"},
+                timeout=15,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 200:
+                    payload = data.get("data") or {}
+                    results = payload.get("results") or []
+                    for r in results:
+                        code = _extract_six_digit_code(r.get("value"), r)
+                        if code:
+                            return code
+                    code = _extract_six_digit_code(
+                        payload.get("subject"),
+                        payload.get("text"),
+                        payload.get("html"),
+                        payload.get("raw"),
+                        payload.get("snippet"),
+                        payload.get("results"),
+                        payload,
+                    )
+                    if code:
+                        return code
+
+        if TEMPMAIL_ADMIN_TOKEN:
+            res = session.get(
+                f"{TEMPMAIL_API_BASE}/admin/emails",
+                params={"page": 1, "pageSize": 100},
+                headers={"Authorization": f"Bearer {TEMPMAIL_ADMIN_TOKEN}"},
+                timeout=15,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("code") == 200:
+                    items = ((data.get("data") or {}).get("items") or [])
+                    email_lc = email.strip().lower()
+                    for item in items:
+                        if str(item.get("to_address", "")).strip().lower() != email_lc:
+                            continue
+                        code = _extract_six_digit_code(
+                            item.get("subject"),
+                            item.get("text"),
+                            item.get("html"),
+                            item.get("raw"),
+                            item.get("snippet"),
+                            item.get("extracted_json"),
+                            item,
+                        )
+                        if code:
+                            return code
         return None
     except Exception:
         return None
@@ -1055,22 +1115,61 @@ class ChatGPTRegister:
             session = curl_requests.Session()
             if self.proxy:
                 session.proxies = {"http": self.proxy, "https": self.proxy}
-            res = session.get(
-                f"{TEMPMAIL_API_BASE}/api/emails/latest",
-                params={"address": email},
-                headers={"Authorization": f"Bearer {TEMPMAIL_API_TOKEN}"},
-                timeout=15,
-            )
-            if res.status_code != 200:
-                return None
-            data = res.json()
-            if data.get("code") != 200:
-                return None
-            results = (data.get("data") or {}).get("results") or []
-            for r in results:
-                value = str(r.get("value", "")).strip()
-                if re.fullmatch(r"\d{6}", value):
-                    return value
+
+            if TEMPMAIL_API_TOKEN:
+                res = session.get(
+                    f"{TEMPMAIL_API_BASE}/api/emails/latest",
+                    params={"address": email},
+                    headers={"Authorization": f"Bearer {TEMPMAIL_API_TOKEN}"},
+                    timeout=15,
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("code") == 200:
+                        payload = data.get("data") or {}
+                        results = payload.get("results") or []
+                        for r in results:
+                            code = _extract_six_digit_code(r.get("value"), r)
+                            if code:
+                                return code
+                        code = _extract_six_digit_code(
+                            payload.get("subject"),
+                            payload.get("text"),
+                            payload.get("html"),
+                            payload.get("raw"),
+                            payload.get("snippet"),
+                            payload.get("results"),
+                            payload,
+                        )
+                        if code:
+                            return code
+
+            if TEMPMAIL_ADMIN_TOKEN:
+                res = session.get(
+                    f"{TEMPMAIL_API_BASE}/admin/emails",
+                    params={"page": 1, "pageSize": 100},
+                    headers={"Authorization": f"Bearer {TEMPMAIL_ADMIN_TOKEN}"},
+                    timeout=15,
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    if data.get("code") == 200:
+                        items = ((data.get("data") or {}).get("items") or [])
+                        email_lc = email.strip().lower()
+                        for item in items:
+                            if str(item.get("to_address", "")).strip().lower() != email_lc:
+                                continue
+                            code = _extract_six_digit_code(
+                                item.get("subject"),
+                                item.get("text"),
+                                item.get("html"),
+                                item.get("raw"),
+                                item.get("snippet"),
+                                item.get("extracted_json"),
+                                item,
+                            )
+                            if code:
+                                return code
             return None
         except Exception:
             return None

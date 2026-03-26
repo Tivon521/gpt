@@ -3,6 +3,7 @@
   "total_accounts": 3,
   "tempmail_api_base": "你的temp-mail-console地址",
   "tempmail_api_token": "你的temp-mail-console的API-TOKEN",
+  "tempmail_admin_token": "可选：后台ADMIN_TOKEN，用于兜底查验证码",
   "tempmail_domain": "",
   "proxy": "",
   "output_file": "registered_accounts.txt",
